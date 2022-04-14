@@ -1,0 +1,69 @@
+plugins {
+    id 'com.android.application'
+    id 'kotlin-android'
+}
+
+ext {
+    extAgpVersion="4.2.1"
+    extCompileSdkVersion=32
+    extBuildToolsVersion="30.0.2"
+    extMinSdkVersion=16
+    extTargetSdkVersion=32
+    extVersionCode=1
+    extVersionName="1.0"
+    extMinifyEnabled=false
+    extOpentokSdkVersion="2.22.0"
+
+    extAppCompatVersion="1.4.1"
+    extEasyPermissionsVersion="3.0.0"
+    extConstraintLyoutVersion="2.0.4"
+    extArCoreVersion="1.22.0"
+    extSceneFormVersion="1.17.1"
+    extRetrofitVersion="2.9.0"
+    extOkHttpVersion="4.8.1"
+    extRetrofit2ConverterMoshi="2.9.0"
+    extOkHttpLoggingInterceptor="4.9.0"
+}
+
+android {
+    compileSdkVersion extCompileSdkVersion
+
+    defaultConfig {
+        applicationId "com.tokbox.sample.basicvideochat"
+        minSdkVersion extMinSdkVersion
+        targetSdkVersion extTargetSdkVersion
+        versionCode extVersionCode
+        versionName extVersionName
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled extMinifyEnabled
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+dependencies {
+    // Dependency versions are defined in the ../../commons.gradle file
+    implementation "com.opentok.android:opentok-android-sdk:${extOpentokSdkVersion}"
+    implementation "androidx.appcompat:appcompat:${extAppCompatVersion}"
+    implementation "pub.devrel:easypermissions:${extEasyPermissionsVersion}"
+    implementation "androidx.constraintlayout:constraintlayout:${extConstraintLyoutVersion}"
+
+    implementation "com.google.android.flexbox:flexbox:3.0.0"
+
+    implementation "com.squareup.retrofit2:retrofit:${extRetrofitVersion}"
+    implementation "com.squareup.okhttp3:okhttp:${extOkHttpVersion}"
+    implementation "com.squareup.retrofit2:converter-moshi:${extRetrofit2ConverterMoshi}"
+    implementation "com.squareup.okhttp3:logging-interceptor:${extOkHttpLoggingInterceptor}"
+}
