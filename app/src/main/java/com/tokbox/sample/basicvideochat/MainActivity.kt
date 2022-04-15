@@ -2,14 +2,32 @@ package com.tokbox.sample.basicvideochat
 
 import android.Manifest
 import android.content.res.Resources
+import android.net.Uri
 import android.opengl.GLSurfaceView
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.exoplayer2.*
+import com.google.android.exoplayer2.database.ExoDatabaseProvider
+import com.google.android.exoplayer2.source.BaseMediaSource
+import com.google.android.exoplayer2.source.ProgressiveMediaSource
+import com.google.android.exoplayer2.source.hls.HlsMediaSource
+import com.google.android.exoplayer2.trackselection.DefaultTrackSelector
+import com.google.android.exoplayer2.ui.PlayerView
+import com.google.android.exoplayer2.upstream.DefaultBandwidthMeter
+import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory
+import com.google.android.exoplayer2.upstream.cache.CacheDataSource
+import com.google.android.exoplayer2.upstream.cache.LeastRecentlyUsedCacheEvictor
+import com.google.android.exoplayer2.upstream.cache.SimpleCache
+import com.google.android.exoplayer2.util.MimeTypes
+import com.google.android.exoplayer2.util.Util
 import com.google.android.flexbox.FlexboxLayout
 import com.opentok.android.BaseVideoRenderer
 import com.opentok.android.OpentokError
@@ -44,8 +62,14 @@ class MainActivity : AppCompatActivity(), PermissionCallbacks {
     private lateinit var subscriberViewContainer: FlexboxLayout
     private var cameraBtn: ImageView? = null
     private var microphoneBtn: ImageView? = null
+    private var myMutedIcon: ImageView? = null
+    private var callBtn: ImageView? = null
+    private var progress: View? = null
+    private var playerView: PlayerView? = null
     private var cameraEnabled = true
     private var microphoneEnabled = true
+    private var connected = true
+    private var exoPlayer: ExoPlayer? = null
     private val publisherListener: PublisherListener = object : PublisherListener {
         override fun onStreamCreated(publisherKit: PublisherKit, stream: Stream) {
             Log.d(TAG, "onStreamCreated: Publisher Stream Created. Own stream ${stream.streamId}")
@@ -65,20 +89,27 @@ class MainActivity : AppCompatActivity(), PermissionCallbacks {
             publisher = Publisher.Builder(this@MainActivity).build()
             publisher?.setPublisherListener(publisherListener)
             publisher?.renderer?.setStyle(BaseVideoRenderer.STYLE_VIDEO_SCALE, BaseVideoRenderer.STYLE_VIDEO_FILL)
-            publisher?.view?.let { addVideoView(it) }
-            if (publisher?.view is GLSurfaceView) {
-                (publisher?.view as GLSurfaceView).setZOrderOnTop(true)
+            publisher?.view?.let {
+                myMutedIcon = addVideoView(it).second
+                myMutedIcon?.visibility = if (microphoneEnabled) View.INVISIBLE else View.VISIBLE
             }
+            if (publisher?.view is GLSurfaceView) {
+                //(publisher?.view as GLSurfaceView).setZOrderOnTop(true)
+            }
+            publisher?.publishVideo = cameraEnabled
+            publisher?.publishAudio = microphoneEnabled
             session.publish(publisher)
+            restoreControls()
         }
 
         override fun onDisconnected(session: Session) {
             Log.d(TAG, "onDisconnected: Disconnected from session: ${session.sessionId}")
+            restoreControls()
         }
 
         override fun onStreamReceived(session: Session, stream: Stream) {
-            Log.d(TAG, "TEST onStreamReceived: New Stream Received ${stream.streamId} in session: ${session.sessionId}")
-            if(subscribers.containsKey(stream.streamId)) return
+            Log.d(TAG, "onStreamReceived: New Stream Received ${stream.streamId} in session: ${session.sessionId}")
+            if (subscribers.containsKey(stream.streamId)) return
             val subscriber = Subscriber.Builder(this@MainActivity, stream).build().also {
                 it.renderer?.setStyle(
                         BaseVideoRenderer.STYLE_VIDEO_SCALE,
@@ -87,13 +118,19 @@ class MainActivity : AppCompatActivity(), PermissionCallbacks {
 
                 it.setSubscriberListener(subscriberListener)
             }
-
             session.subscribe(subscriber)
-                subscriber?.view?.let {
-                    addVideoView(it)
-                    Log.d(TAG, "TEST added view $it size ${subscriberViewContainer.childCount}")
-                    subscribers.put(stream.streamId, it)
+            subscriber?.view?.let {
+                val pair = addVideoView(it)
+                val container = pair.first
+                val mutedIcon = pair.second
+                val audioBuffer = AudioBuffer(10)
+                subscriber.setAudioLevelListener { subscriberKit, value ->
+                    Log.d(TAG, "TEST audio $value")
+                    audioBuffer.add(value)
+                    if (audioBuffer.size > 3) mutedIcon.visibility = if (audioBuffer.getSum() > 0) View.INVISIBLE else View.VISIBLE
                 }
+                subscribers.put(stream.streamId, container)
+            }
         }
 
         override fun onStreamDropped(session: Session, stream: Stream) {
@@ -122,12 +159,28 @@ class MainActivity : AppCompatActivity(), PermissionCallbacks {
         }
     }
 
-    private fun addVideoView(view: View){
-        subscriberViewContainer.addView(view)
-        view.updateLayoutParams<ViewGroup.LayoutParams> {
-            width = subscriberViewContainer.width/3
-            height = subscriberViewContainer.height/3
+    private fun addVideoView(view: View): Pair<View, ImageView> {
+        val container = FrameLayout(this)
+        subscriberViewContainer.addView(container)
+        container.updateLayoutParams<ViewGroup.LayoutParams> {
+            width = subscriberViewContainer.width / 3
+            height = subscriberViewContainer.height / 3
         }
+        container.addView(view)
+        return Pair(
+                container,
+                ImageView(this).apply {
+                    visibility = View.INVISIBLE
+                    setImageResource(R.drawable.muted)
+                    container.addView(this)
+                    updateLayoutParams<FrameLayout.LayoutParams> {
+                        width = 24f.dp
+                        height = 24f.dp
+                        gravity = Gravity.BOTTOM or Gravity.END
+                        z = 1.0f
+                    }
+                }
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -136,39 +189,105 @@ class MainActivity : AppCompatActivity(), PermissionCallbacks {
         subscriberViewContainer = findViewById(R.id.subscriber_container)
         cameraBtn = findViewById(R.id.camera)
         microphoneBtn = findViewById(R.id.microphone)
+        callBtn = findViewById(R.id.call)
+        progress = findViewById(R.id.progress)
+        playerView = findViewById(R.id.playerView)
         requestPermissions()
         cameraBtn?.setOnClickListener {
-            if(cameraEnabled){
+            if (!connected) return@setOnClickListener
+            if (cameraEnabled) {
                 cameraEnabled = false
                 cameraBtn?.setImageResource(R.drawable.no_video)
-            }else{
+            } else {
                 cameraEnabled = true
                 cameraBtn?.setImageResource(R.drawable.video)
             }
             publisher?.publishVideo = cameraEnabled
         }
         microphoneBtn?.setOnClickListener {
-            if(microphoneEnabled){
+            if (!connected) return@setOnClickListener
+            if (microphoneEnabled) {
                 microphoneEnabled = false
                 microphoneBtn?.setImageResource(R.drawable.no_sound)
-            }else{
+            } else {
                 microphoneEnabled = true
                 microphoneBtn?.setImageResource(R.drawable.sound)
             }
+            myMutedIcon?.visibility = if (microphoneEnabled) View.INVISIBLE else View.VISIBLE
             publisher?.publishAudio = microphoneEnabled
         }
+        callBtn?.setOnClickListener {
+            disableControls()
+            if (connected) {
+                connected = false
+                callBtn?.setImageResource(R.drawable.call_connect)
+                disconnect()
+            } else {
+                connected = true
+                callBtn?.setImageResource(R.drawable.call_disconnect)
+                connect()
+            }
+        }
+        disableControls()
+        initializePlayer()
     }
 
+    private fun disableControls() {
+        progress?.visibility = View.VISIBLE
+        cameraBtn?.alpha = 0.5f
+        microphoneBtn?.alpha = 0.5f
+        callBtn?.alpha = 0.5f
+    }
 
+    private fun restoreControls() {
+        cameraBtn?.alpha = 1.0f
+        microphoneBtn?.alpha = 1.0f
+        callBtn?.alpha = 1.0f
+        progress?.visibility = View.GONE
+    }
 
-    override fun onPause() {
-        super.onPause()
-        session?.onPause()
+    private fun connect() {
+        requestPermissions()
+    }
+
+    private fun disconnect() {
+        session?.disconnect()
+        subscribers.clear()
+        subscriberViewContainer.removeAllViews()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (Build.VERSION.SDK_INT > 23) {
+            initializePlayer()
+            playerView?.onResume()
+        }
     }
 
     override fun onResume() {
         super.onResume()
         session?.onResume()
+        if (Build.VERSION.SDK_INT <= 23 || exoPlayer == null) {
+            initializePlayer()
+            playerView?.onResume()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        session?.onPause()
+        if (Build.VERSION.SDK_INT <= 23) {
+            playerView?.onPause()
+            releasePlayer()
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (Build.VERSION.SDK_INT > 23) {
+            playerView?.onPause()
+            releasePlayer()
+        }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
@@ -269,9 +388,77 @@ class MainActivity : AppCompatActivity(), PermissionCallbacks {
         finish()
     }
 
+    private fun initializePlayer() {
+        val trackSelector = DefaultTrackSelector(this)
+        trackSelector.setParameters(trackSelector.buildUponParameters().setMaxVideoSizeSd())
+        exoPlayer = SimpleExoPlayer.Builder(this)
+                .setBandwidthMeter(bandwidthMeter)
+                .setTrackSelector(trackSelector)
+                .setLoadControl(DefaultLoadControl())
+                .build().apply {
+                    repeatMode = Player.REPEAT_MODE_ALL
+                    playWhenReady = true
+                    setForegroundMode(true)
+                    val mediaSource = buildMediaSource(STREAM_URL)
+                    setMediaSource(mediaSource, true)
+                    volume = 0f
+                    playWhenReady = true
+                    playerView?.player = this
+                    prepare()
+                    play()
+                    println("TEST play")
+                }
+    }
+
+    private fun releasePlayer() {
+        exoPlayer?.release()
+        exoPlayer = null
+    }
+
+    private fun buildMediaSource(streamUrl: String): BaseMediaSource {
+        val builder = mediaItemBuilder(streamUrl)
+        return when {
+            isHlsStream(streamUrl) -> {
+                HlsMediaSource.Factory(defaultDataSourceFactory()).createMediaSource(builder.build())
+            }
+            else -> {
+                ProgressiveMediaSource.Factory(
+                        CacheDataSource.Factory().setCache(cache)
+                                .setUpstreamDataSourceFactory(defaultDataSourceFactory())
+                                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                ).createMediaSource(builder.build())
+            }
+        }
+    }
+
+    private val cache: SimpleCache by lazy {
+        SimpleCache(
+                cacheDir,
+                LeastRecentlyUsedCacheEvictor(100L * 1024 * 1024),
+                ExoDatabaseProvider(this)
+        )
+    }
+
+    private val bandwidthMeter by lazy { DefaultBandwidthMeter.Builder(this).build() }
+
+    private val agent by lazy { Util.getUserAgent(this, "user_agent") }
+
+    private fun defaultDataSourceFactory(): DefaultDataSourceFactory =
+            DefaultDataSourceFactory(this, agent, bandwidthMeter)
+
+    private fun mediaItemBuilder(streamUrl: String) = MediaItem.Builder().setUri(Uri.parse(streamUrl)).apply {
+        when {
+            isHlsStream(streamUrl) -> setMimeType(MimeTypes.APPLICATION_M3U8)
+            else -> setMimeType(MimeTypes.APPLICATION_MP4)
+        }
+    }
+
+    private fun isHlsStream(streamUrl: String): Boolean = streamUrl.endsWith(".m3u8")
+
     companion object {
         private val TAG = MainActivity::class.java.simpleName
         private const val PERMISSIONS_REQUEST_CODE = 124
+        private val STREAM_URL = "https://vod-progressive.akamaized.net/exp=1650027561~acl=%2Fvimeo-prod-skyfire-std-us%2F01%2F3417%2F4%2F117086260%2F424092932.mp4~hmac=82d64bb94cdf49a787f7db1fb452226389098dac838e5e7da171991d16713120/vimeo-prod-skyfire-std-us/01/3417/4/117086260/424092932.mp4"
     }
 }
 
