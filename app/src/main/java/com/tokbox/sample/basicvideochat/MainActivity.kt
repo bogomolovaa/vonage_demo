@@ -360,7 +360,9 @@ class MainActivity : AppCompatActivity(), PermissionCallbacks {
         live outside of the Activity e.g: live between activities. For a production applications,
         it's convenient to use Application context instead of Activity context.
          */
-        session = Session.Builder(this, apiKey, sessionId).build().also {
+        session = Session.Builder(this, apiKey, sessionId).sessionOptions(object : Session.SessionOptions() {
+            override fun useTextureViews() = false
+        }).build().also {
             it.setSessionListener(sessionListener)
             it.connect(token)
         }
